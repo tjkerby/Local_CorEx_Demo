@@ -1,0 +1,6 @@
+local-corex==0.1.0
+jupyter
+matplotlib
+pandas
+numpy
+scikit-learn
