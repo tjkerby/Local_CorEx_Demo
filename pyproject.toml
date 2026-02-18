@@ -2,12 +2,25 @@
 name = "local-corex-experiments"
 version = "0.1.0"
 description = "Experiment notebooks and scripts that depend on the local-corex package"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.10,<3.13"
 dependencies = [
-    "local-corex @ git+https://github.com/TomKerbyLab/Local_CorEx.git",
+    "local-corex",
     "jupyter",
     "matplotlib",
     "pandas",
     "numpy",
     "scikit-learn",
+    "tqdm",
+    "torch>=2.6.0",
+    "torchvision>=0.21.0",
+    "pytorch-lightning",
+    "streamlit>=1.50.0",
 ]
+
+[tool.uv.sources]
+local-corex = { path = "./local-corex-repo", editable = true }
+
+[tool.uv]
+index-url = "https://download.pytorch.org/whl/cpu"
+extra-index-url = ["https://pypi.org/simple"]
+index-strategy = "unsafe-best-match"
