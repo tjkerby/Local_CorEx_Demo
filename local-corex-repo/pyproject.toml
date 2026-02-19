@@ -1,0 +1,32 @@
+[project]
+name = "local-corex"
+version = "0.1.0"
+description = "Local Correlation Explanation and utilities"
+readme = "README.md"
+requires-python = ">=3.9,<3.13"
+dependencies = [
+    "datasets>=3.4.1",
+    "huggingface-hub>=0.29.3",
+    "imageio>=2.37.0",
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.5",
+    "numpy<2.0",
+    "pandas<2.0",
+    "phate>=1.0.11",
+    "pytorch-lightning>=2.5.0.post0",
+    "scikit-learn>=1.6.1",
+    "scprep>=1.2.3",
+    "seaborn>=0.13.2",
+    "tensorboard>=2.19.0",
+    "torch>=2.6.0",
+    "torchvision>=0.21.0",
+    "tqdm>=4.67.1",
+    "ucimlrepo>=0.0.7",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.25,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "src"
