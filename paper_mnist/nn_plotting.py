@@ -41,13 +41,20 @@ def plot_perturved_accuracy(
     inputs: np.ndarray,
     labels: Sequence[int],
     indexes: Sequence[Sequence[int]],
+    base_probs=None,
     factor_num: int = 0,
     hidden_layer_idx: int = 0,
     num_clusters: int = 20,
     num_drop: int = 35,
     hidden_dim: int = 200,
+    return_probs: bool = False,
 ):
-    """Visualize accuracy deltas per cluster after pruning a hidden layer."""
+    """Visualize accuracy deltas per cluster after pruning a hidden layer.
+    
+    - Keeps inference on CPU (for demo stability).
+    - Optionally returns diff_probs = altered_probs - base_probs.
+      If base_probs is None, it uses the baseline probs from `clf`.
+    """
     title = f"H{hidden_layer_idx + 1}"
 
     nodes = du.n_largest_magnitude_indexes(
@@ -57,15 +64,36 @@ def plot_perturved_accuracy(
     clf_clone = copy.deepcopy(clf)
     clf_clone = nu.prune_model_node(clf_clone, hidden_layer_idx, nodes)
 
-    baseline_pred = clf(torch.tensor(inputs, dtype=torch.float32)).max(1).indices.detach().numpy()
-    base_accuracies: List[float] = []
-    for i in range(num_clusters):
-        base_accuracies.append(100 * np.mean(baseline_pred[indexes[i]] == labels[indexes[i]]))
+    # Ensure models + inference are on CPU
+    device = torch.device("cpu")
+    clf = clf.to(device)
+    clf_clone = clf_clone.to(device)
 
-    altered_pred = clf_clone(torch.tensor(inputs, dtype=torch.float32)).max(1).indices.detach().numpy()
+    x = torch.tensor(inputs, dtype=torch.float32, device=device)
+
+    with torch.no_grad():
+        baseline_logits = clf(x)
+        baseline_probs = torch.nn.functional.softmax(baseline_logits, dim=1)
+        baseline_pred = baseline_probs.max(1).indices.cpu().numpy()
+
+        if base_probs is None:
+            base_probs = baseline_probs
+        else:
+            # Ensure provided base_probs is a CPU tensor for consistent subtraction
+            if not torch.is_tensor(base_probs):
+                base_probs = torch.tensor(base_probs)
+            base_probs = base_probs.to(device)
+
+        altered_logits = clf_clone(x)
+        altered_probs = torch.nn.functional.softmax(altered_logits, dim=1)
+        altered_pred = altered_probs.max(1).indices.cpu().numpy()
+
+    base_accuracies: List[float] = []
     altered_accuracies: List[float] = []
     for i in range(num_clusters):
-        altered_accuracies.append(100 * np.mean(altered_pred[indexes[i]] == labels[indexes[i]]))
+        idx = indexes[i]
+        base_accuracies.append(100 * np.mean(baseline_pred[idx] == labels[idx]))
+        altered_accuracies.append(100 * np.mean(altered_pred[idx] == labels[idx]))
 
     diff = [np.round(altered_accuracies[i] - base_accuracies[i], 3) for i in range(num_clusters)]
 
@@ -87,7 +115,12 @@ def plot_perturved_accuracy(
     ax.yaxis.label.set_fontsize(16)
     plt.tick_params(labelsize=14)
     plt.legend(loc="lower center", ncol=5, bbox_to_anchor=(0.5, -0.225), prop={"size": 12})
-    plt.close()
+    plt.close(fig)
+
+    if return_probs:
+        diff_probs = altered_probs - base_probs
+        return fig, diff_probs
+
     return fig
 
 

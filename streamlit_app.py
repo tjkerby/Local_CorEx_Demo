@@ -37,6 +37,7 @@ from config import conf as clf_conf_raw
 try:
     from local_corex import LinearCorex, partition_data
     from local_corex.utils.plotting import hidden_state_plot, multi_rep_plot
+    from nn_plotting import plot_logit_effects
     HAS_COREX = True
 except ImportError:
     HAS_COREX = False
@@ -101,7 +102,7 @@ def plot_group_averages(inputs, indexes):
     fig, axes = plt.subplots(2, 10, figsize=(20, 5))
     
     for i, ax in enumerate(axes.flatten()):
-        ax.imshow(np.mean(inputs[indexes[i]], axis=0).reshape(28, 28), cmap='gray')
+        ax.imshow(np.mean(inputs[indexes[i]], axis=0).reshape(28, 28), cmap='viridis')
         ax.set_title(f'Group {i}')
         ax.axis('off')
     
@@ -123,14 +124,31 @@ def compute_base_accuracies(do_clf, inputs, labels, indexes):
 
 
 def main():
-    st.set_page_config(page_title="MNIST CorEx Analysis", layout="wide")
-    st.title("🧠 MNIST CorEx Analysis & Delete Node Experiment")
+    st.set_page_config(page_title="MNIST Classifier CorEx Analysis", layout="wide")
+    st.title("🧠 MNIST Classifier CorEx Analysis")
     
-    # Initialize session state for persistent plot
+    # Initialize session state for persistent plot and selected group
     if 'show_group_viz' not in st.session_state:
         st.session_state.show_group_viz = False
     if 'group_viz_fig' not in st.session_state:
         st.session_state.group_viz_fig = None
+    if 'selected_group' not in st.session_state:
+        st.session_state.selected_group = 0
+    if 'selected_model_key' not in st.session_state:
+        st.session_state.selected_model_key = None
+    if 'last_delete_nodes_fig' not in st.session_state:
+        st.session_state.last_delete_nodes_fig = None
+    if 'last_delete_nodes_key' not in st.session_state:
+        st.session_state.last_delete_nodes_key = None
+    if 'mi_summary_by_model' not in st.session_state:
+        st.session_state.mi_summary_by_model = {}
+
+    def parse_model_key(model_key: str):
+        try:
+            group_str, layer_str = model_key.replace("corex_g", "").split("_h")
+            return int(group_str), int(layer_str)
+        except Exception:
+            return None, None
     
     # Load data
     with st.spinner("Loading models and data..."):
@@ -141,22 +159,59 @@ def main():
     # Sidebar configuration
     st.sidebar.header("Configuration")
     
-    # Tab 1: Group Visualization
-    tab1, tab2, tab3 = st.tabs(["📊 Group Visualization", "🔧 Train CorEx", "📈 Delete Node Experiment"])
+    st.header("Group Visualization")
+    st.markdown("Generate the full group visualizations from any tab.")
+
+    if st.button("Generate Group Visualizations"):
+        with st.spinner("Generating visualizations..."):
+            st.session_state.group_viz_fig = plot_group_averages(data['inputs'], data['indexes'])
+            st.session_state.show_group_viz = True
+
+    if st.session_state.show_group_viz and st.session_state.group_viz_fig is not None:
+        st.pyplot(st.session_state.group_viz_fig, use_container_width=True)
+    else:
+        st.info("Click the button above to generate group visualizations.")
+
+    st.divider()
+
+    # Tabs
+    tab1, tab2, tab3 = st.tabs(["📊 Choose a Group", "🔧 Train CorEx", "📈 Explore"])
     
     with tab1:
-        st.header("Average Pixel Values by Group")
-        st.markdown("Showing the mean pixel values for each of the 20 groups.")
-        
-        if st.button("Generate Group Visualizations"):
-            with st.spinner("Generating visualizations..."):
-                st.session_state.group_viz_fig = plot_group_averages(data['inputs'], data['indexes'])
-                st.session_state.show_group_viz = True
-        
-        if st.session_state.show_group_viz and st.session_state.group_viz_fig is not None:
-            st.pyplot(st.session_state.group_viz_fig, use_container_width=True)
-        else:
-            st.info("Click the button above to generate group visualizations.")
+        st.header("Choose a Group")
+        st.markdown("Select the group to use throughout the pipeline.")
+
+        st.subheader("Select Group for Analysis")
+        selected_group = st.selectbox(
+            "Choose a group to analyze throughout the pipeline",
+            range(20),
+            index=st.session_state.selected_group,
+            key="tab1_group_select"
+        )
+
+        # Update session state if changed
+        if selected_group != st.session_state.selected_group:
+            st.session_state.selected_group = selected_group
+
+        st.info(f"📌 Group {st.session_state.selected_group} is selected for downstream analysis.")
+
+        # Show selected group label distribution and average image
+        group_indices = data['indexes'][st.session_state.selected_group]
+        group_labels = data['labels'][group_indices]
+        label_counts = Counter(group_labels)
+        sorted_counts = sorted(label_counts.items(), key=lambda x: x[1], reverse=True)
+        counts_text = ", ".join([f"{label}:{count}" for label, count in sorted_counts])
+        st.markdown(f"**Label distribution:** {counts_text}")
+
+        avg_fig, avg_ax = plt.subplots(figsize=(2.5, 2.5))
+        avg_ax.imshow(np.mean(data['inputs'][group_indices], axis=0).reshape(28, 28), cmap='viridis')
+        avg_ax.set_title(f"Group {st.session_state.selected_group}", fontsize=10)
+        avg_ax.axis('off')
+        st.pyplot(avg_fig, use_container_width=False)
+
+        st.divider()
+
+        st.subheader("Group Statistics")
         
         # Show group statistics
         st.subheader("Group Statistics")
@@ -176,26 +231,64 @@ def main():
     
     with tab2:
         st.header("Train CorEx Model")
-        st.markdown("Select a group and hidden layer to train a CorEx model.")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            group_id = st.selectbox("Select Group", range(20), key="group_select")
-        
-        with col2:
-            layer_choice = st.selectbox(
-                "Select Hidden Layer",
-                options=[1, 2, 3],
-                format_func=lambda x: f"Layer {x} (H{x})",
-                key="layer_select"
+        st.markdown(f"Training CorEx model for **Group {st.session_state.selected_group}**.")
+
+        # Show trained models and allow selection
+        trained_model_keys = sorted(
+            [k for k in st.session_state.keys() if k.startswith("corex_g") and "_h" in k]
+        )
+        trained_model_labels = []
+        for key in trained_model_keys:
+            g, h = parse_model_key(key)
+            if g is not None and h is not None:
+                trained_model_labels.append((f"Group {g} | Layer {h}", key))
+
+        if trained_model_labels:
+            label_to_key = {label: key for label, key in trained_model_labels}
+            default_label = trained_model_labels[0][0]
+            if st.session_state.selected_model_key in trained_model_keys:
+                for label, key in trained_model_labels:
+                    if key == st.session_state.selected_model_key:
+                        default_label = label
+                        break
+
+            selected_label = st.selectbox(
+                "Select trained model for experiments",
+                options=[label for label, _ in trained_model_labels],
+                index=[label for label, _ in trained_model_labels].index(default_label),
+                key="trained_model_select"
             )
+            st.session_state.selected_model_key = label_to_key[selected_label]
+            if st.session_state.selected_model_key in st.session_state.mi_summary_by_model:
+                st.subheader("Top Factors by Majority-Class Logit MI")
+                st.dataframe(
+                    st.session_state.mi_summary_by_model[st.session_state.selected_model_key],
+                    use_container_width=True
+                )
+        else:
+            st.info("No trained models yet. Train a model below to enable experiments.")
+        
+        # Use the group from Tab 1
+        group_id = st.session_state.selected_group
+        
+        # Display group info
+        group_indices = data['indexes'][group_id]
+        group_labels = data['labels'][group_indices]
+        digit_counts = Counter(group_labels)
+        st.info(f"📊 Group {group_id}: {len(group_labels)} samples | Main digit: {max(digit_counts, key=digit_counts.get)}")
+        
+        layer_choice = st.selectbox(
+            "Select Hidden Layer",
+            options=[1, 2, 3],
+            format_func=lambda x: f"Layer {x} (H{x})",
+            key="layer_select"
+        )
         
         # Map layer choice to layer index and config
         layer_map = {
-            1: {'idx': 0, 'latent_dim': 500, 'encoder_layer': 1, 'encoder_idx': 1},
-            2: {'idx': 1, 'latent_dim': 400, 'encoder_layer': 2, 'encoder_idx': 2},
-            3: {'idx': 2, 'latent_dim': 300, 'encoder_layer': 3, 'encoder_idx': 3},
+            1: {'idx': 1, 'latent_dim': 500, 'encoder_idx': 0},
+            2: {'idx': 2, 'latent_dim': 400, 'encoder_idx': 1},
+            3: {'idx': 3, 'latent_dim': 300, 'encoder_idx': 2},
         }
         
         layer_config = layer_map[layer_choice]
@@ -206,7 +299,7 @@ def main():
                     # Get data for this group and layer
                     group_indices = data['indexes'][group_id]
                     hidden_states = data['model_data'][layer_config['idx']][group_indices]
-                    output_states = data['model_data'][4][group_indices]
+                    output_states = data['model_data'][0][group_indices]
                     
                     # Ensure data is float32 and properly formatted
                     hidden_states = np.asarray(hidden_states, dtype=np.float32)
@@ -217,48 +310,47 @@ def main():
                     corex_model = LinearCorex(30, seed=42, gaussianize='outliers')
                     corex_model.fit(x)
                     
-                    st.session_state[f'corex_g{group_id}_h{layer_choice}'] = corex_model
+                    new_model_key = f'corex_g{group_id}_h{layer_choice}'
+                    st.session_state[new_model_key] = corex_model
                     st.session_state[f'corex_x_g{group_id}_h{layer_choice}'] = x
+                    st.session_state.selected_model_key = new_model_key
                     
                     # Display results
                     st.success(f"✅ Training completed!")
                     st.subheader("CorEx Total Correlation Score (TCS)")
-                    tcs_value = corex_model.tcs
-                    # Handle both scalar and array cases
-                    if hasattr(tcs_value, '__len__'):
-                        tcs_value = float(tcs_value[0]) if len(tcs_value) > 0 else 0.0
-                    else:
-                        tcs_value = float(tcs_value)
-                    st.metric("TCS", f"{tcs_value:.4f}")
+
+                    st.metric("TCS", f"{np.sum(corex_model.tcs):.4f}")
                     
-                    # Show top factors by MI
-                    st.subheader("Top Factors by Mutual Information")
+                    # Show top factors by MI with majority class logits
+                    st.subheader("Top Factors by Majority-Class Logit MI")
                     try:
                         mi_scores = corex_model.moments['MI']
-                        
-                        # MI scores should be (30, 794) - aggregate across features
                         mi_scores = np.asarray(mi_scores)
-                        
-                        # If 2D, sum across features to get total MI per factor
-                        if len(mi_scores.shape) == 2:
-                            mi_per_factor = np.sum(mi_scores, axis=1)
+
+                        majority_class = max(digit_counts, key=digit_counts.get)
+
+                        if len(mi_scores.shape) == 2 and mi_scores.shape[1] >= 10:
+                            # last 10 columns correspond to logits
+                            logits_mi = mi_scores[:, -10:]
+                            majority_mi = logits_mi[:, int(majority_class)]
                         else:
-                            mi_per_factor = mi_scores.flatten()
-                        
-                        # Get top 5 factors
-                        top_factor_indices = np.argsort(mi_per_factor)[-5:][::-1]
-                        
+                            majority_mi = mi_scores.flatten()
+
+                        # Get top 5 factors by majority-class MI
+                        top_factor_indices = np.argsort(majority_mi)[-5:][::-1]
+
                         mi_data = []
                         for factor_id in top_factor_indices:
-                            mi_value = float(mi_per_factor[int(factor_id)])
+                            mi_value = float(majority_mi[int(factor_id)])
                             mi_data.append({
                                 'Factor': int(factor_id),
-                                'Total MI': mi_value
+                                f'MI w/ class {majority_class}': mi_value
                             })
                         
                         if mi_data:
                             mi_df = pd.DataFrame(mi_data)
                             st.dataframe(mi_df, use_container_width=True)
+                            st.session_state.mi_summary_by_model[new_model_key] = mi_df
                         else:
                             st.info("No MI scores available.")
                     except Exception as e:
@@ -270,71 +362,214 @@ def main():
                     st.error(f"Error training model: {str(e)}")
     
     with tab3:
-        st.header("Delete Node Experiment")
-        st.markdown("""
-        Run the delete node experiment to measure how removing CorEx factors 
-        affects classifier accuracy on the selected group.
-        """)
-        
-        col1, col2, col3 = st.columns(3)
-        
+        st.header("Experiments")
+        st.markdown(
+            f"Use **Group {st.session_state.selected_group}** as the analysis anchor. "
+            "Run multiple experiments below without re-selecting the group."
+        )
+
+        # Use the selected model if available; otherwise fall back to selected group
+        exp_group = st.session_state.selected_group
+        exp_layer = 1
+        if st.session_state.selected_model_key:
+            sel_group, sel_layer = parse_model_key(st.session_state.selected_model_key)
+            if sel_group is not None and sel_layer is not None:
+                exp_group, exp_layer = sel_group, sel_layer
+
+        st.info(f"📌 Using CorEx model trained on Group {exp_group}, Layer {exp_layer}")
+
+        # Shared controls
+        col1, col2 = st.columns(2)
+
         with col1:
-            exp_group = st.selectbox("Select Group", range(20), key="exp_group_select")
-        
-        with col2:
-            exp_layer = st.selectbox(
-                "Select Hidden Layer",
-                options=[1, 2, 3],
+            st.selectbox(
+                "Selected Hidden Layer",
+                options=[exp_layer],
                 format_func=lambda x: f"Layer {x}",
-                key="exp_layer_select"
+                key="exp_layer_select",
+                disabled=True
             )
-        
-        with col3:
-            exp_factor = st.number_input("Select Factor", min_value=0, max_value=29, value=0, key="exp_factor")
-        
-        num_drop = st.slider("Number of Nodes to Drop", min_value=10, max_value=500, value=100, step=10)
-        
+
+        with col2:
+            exp_factor = st.number_input(
+                "Select Factor",
+                min_value=0,
+                max_value=29,
+                value=0,
+                key="exp_factor"
+            )
+
+        exp_tab1, exp_tab2, exp_tab3 = st.tabs([
+            "🧪 Delete Nodes",
+            "🧬 Perturb Reconstructions",
+            "🧠 Logit Impacts"
+        ])
+
         # Check if model exists
         model_key = f'corex_g{exp_group}_h{exp_layer}'
-        
-        if model_key in st.session_state:
-            if st.button("Run Delete Node Experiment", key="run_experiment"):
-                with st.spinner("Running delete node experiment..."):
-                    try:
-                        corex_model = st.session_state[model_key]
-                        
-                        # Map layer to hidden dim
-                        layer_map_exp = {1: 500, 2: 400, 3: 300}
-                        hidden_dim = layer_map_exp[exp_layer]
-                        
-                        # Get data for just this group (CorEx was trained on this group only)
-                        group_idx = data['indexes'][exp_group]
-                        group_inputs = data['inputs'][group_idx]
-                        group_labels = data['labels'][group_idx]
-                        group_indexes = [np.arange(len(group_idx))]  # Single group with all its samples
-                        
-                        # Run the delete node experiment
-                        fig = plot_perturved_accuracy(
-                            data['do_clf'],
-                            corex_model,
-                            group_inputs,
-                            group_labels,
-                            group_indexes,
-                            factor_num=int(exp_factor),
-                            hidden_layer_idx=exp_layer - 1,
-                            num_clusters=1,
-                            num_drop=num_drop,
-                            hidden_dim=hidden_dim
-                        )
-                        
-                        st.pyplot(fig, use_container_width=True)
-                        st.success("✅ Experiment completed!")
-                        
-                    except Exception as e:
-                        st.error(f"Error running experiment: {str(e)}")
-        else:
-            st.warning(f"⚠️ No CorEx model found for Group {exp_group}, Layer {exp_layer}.")
-            st.info("Please train a CorEx model first using the 'Train CorEx' tab.")
+
+        with exp_tab1:
+            st.subheader("Delete Nodes Experiment")
+            st.markdown(
+                "Measure how removing nodes associated with a CorEx factor affects accuracy across all groups."
+            )
+            num_drop = st.slider(
+                "Number of Nodes to Drop",
+                min_value=10,
+                max_value=500,
+                value=100,
+                step=10
+            )
+
+            if model_key in st.session_state:
+                if st.button("Run Delete Node Experiment", key="run_experiment"):
+                    with st.spinner("Running delete node experiment..."):
+                        try:
+                            corex_model = st.session_state[model_key]
+
+                            # Map layer to hidden dim
+                            layer_map_exp = {1: 500, 2: 400, 3: 300}
+                            hidden_dim = layer_map_exp[exp_layer]
+
+                            # Run the delete node experiment on ALL data
+                            fig, diff_probs = plot_perturved_accuracy(
+                                data['do_clf'],
+                                corex_model,
+                                data['inputs'],
+                                data['labels'],
+                                data['indexes'],
+                                factor_num=int(exp_factor),
+                                hidden_layer_idx=exp_layer - 1,
+                                num_clusters=20,
+                                num_drop=num_drop,
+                                hidden_dim=hidden_dim,
+                                return_probs=True
+                            )
+
+                            diff_key = f"diff_probs_g{exp_group}_h{exp_layer}_f{int(exp_factor)}_n{num_drop}"
+                            st.session_state[diff_key] = diff_probs
+                            st.session_state.last_delete_nodes_fig = fig
+                            st.session_state.last_delete_nodes_key = diff_key
+
+                            st.pyplot(fig, use_container_width=True)
+                            st.success("✅ Experiment completed!")
+
+                        except Exception as e:
+                            st.error(f"Error running experiment: {str(e)}")
+                if st.session_state.last_delete_nodes_fig is not None:
+                    st.subheader("Last Result")
+                    st.pyplot(st.session_state.last_delete_nodes_fig, use_container_width=True)
+            else:
+                st.warning(f"⚠️ No CorEx model found for Group {exp_group}, Layer {exp_layer}.")
+                st.info("Please train a CorEx model first using the 'Train CorEx' tab.")
+
+        with exp_tab2:
+            st.subheader("Perturb Reconstructions (Hidden State Plot)")
+            st.markdown(
+                "Visualize reconstructions for the selected factor using the trained CorEx model."
+            )
+
+            scaler = st.slider(
+                "Reconstruction Scaling",
+                min_value=0.5,
+                max_value=3.0,
+                value=1.5,
+                step=0.1
+            )
+
+            if model_key in st.session_state:
+                try:
+                    corex_model = st.session_state[model_key]
+
+                    # Map layer to config for reconstruction
+                    layer_map = {
+                        1: {'idx': 1, 'latent_dim': 500, 'encoder_idx': 0},
+                        2: {'idx': 2, 'latent_dim': 400, 'encoder_idx': 1},
+                        3: {'idx': 3, 'latent_dim': 300, 'encoder_idx': 2},
+                    }
+                    layer_config = layer_map[exp_layer]
+
+                    # Prepare data for hidden_state_plot
+                    group_indices = data['indexes'][exp_group]
+                    hidden_states = data['model_data'][layer_config['idx']][group_indices]
+                    output_states = data['model_data'][0][group_indices]
+                    hidden_states = np.asarray(hidden_states, dtype=np.float32)
+                    output_states = np.asarray(output_states, dtype=np.float32)
+                    x = np.concatenate([hidden_states, output_states], axis=1).astype(np.float32)
+
+                    plot_result = hidden_state_plot(
+                        x,
+                        corex_model,
+                        data['do_ae'],
+                        factors=[int(exp_factor)],
+                        latent_dim=layer_config['latent_dim'],
+                        encoder_layer=layer_config['encoder_idx'] + 1,
+                        scaler=float(scaler),
+                        output_dim=10
+                    )
+
+                    if plot_result is not None:
+                        st.pyplot(plot_result, use_container_width=True)
+                    else:
+                        st.pyplot(plt.gcf(), use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Error generating reconstructions: {str(e)}")
+            else:
+                st.warning(f"⚠️ No CorEx model found for Group {exp_group}, Layer {exp_layer}.")
+                st.info("Please train a CorEx model first using the 'Train CorEx' tab.")
+
+        with exp_tab3:
+            st.subheader("Logit Impacts")
+            st.markdown(
+                "Explore how logits change after node deletion for a chosen partition."
+            )
+
+            partition = st.selectbox(
+                "Select Partition",
+                range(20),
+                index=exp_group,
+                key="logit_partition_select"
+            )
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                bottom_vals = st.number_input(
+                    "Bottom classes",
+                    min_value=1,
+                    max_value=9,
+                    value=2,
+                    step=1,
+                    key="logit_bottom_vals"
+                )
+            with col_b:
+                top_vals = st.number_input(
+                    "Top classes",
+                    min_value=1,
+                    max_value=9,
+                    value=2,
+                    step=1,
+                    key="logit_top_vals"
+                )
+
+            diff_key = f"diff_probs_g{exp_group}_h{exp_layer}_f{int(exp_factor)}_n{num_drop}"
+            if diff_key in st.session_state:
+                diff_probs = st.session_state[diff_key]
+                if not torch.is_tensor(diff_probs):
+                    diff_probs = torch.tensor(diff_probs)
+
+                class_names = [str(i) for i in range(10)]
+                ave_diff = torch.mean(diff_probs[data['indexes'][partition]], dim=0)
+                plot_logit_effects(
+                    ave_diff,
+                    class_names,
+                    bottom_vals=int(bottom_vals),
+                    top_vals=int(top_vals)
+                )
+                st.pyplot(plt.gcf(), use_container_width=True)
+            else:
+                st.warning("⚠️ No diff_probs found for the current settings.")
+                st.info("Run the Delete Nodes experiment first to generate diff_probs.")
     
     # Footer
     st.divider()
